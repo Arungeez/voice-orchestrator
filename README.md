@@ -6,42 +6,68 @@ A cloud-native SaaS platform where multiple real estate companies run automated 
 
 ## Architecture
 
-```
-Admin Dashboard (React)
-        │  REST + WebSocket
-        ▼
-FastAPI Backend (GCP Cloud Run)
-   ├── /api/campaigns/trigger  →  LangGraph Dispatch Graph
-   │        └── Vapi.ai Outbound Call
-   ├── /api/webhooks/vapi      →  LangGraph Evaluation Graph
-   │        └── OpenAI GPT-4o-mini (transcript analysis)
-   └── /ws/updates             →  WebSocket (live status push)
-        │
-        ▼
-  MongoDB Atlas
-  ├── companies
-  ├── customers
-  └── call_logs
+### 1. System Infrastructure
+```mermaid
+graph TD
+    Client["💻 React Dashboard (Frontend)"]
+    FastAPI["⚡ FastAPI Backend (Render)"]
+    Mongo[("🍃 MongoDB Atlas")]
+    Vapi["📞 Vapi.ai API"]
+    OpenAI["🧠 OpenAI GPT-4o-mini"]
+    LangGraph["🔄 LangGraph State Machine"]
+
+    Client -- "HTTP POST (Trigger Campaign)" --> FastAPI
+    FastAPI -- "Fetch Leads & Prompts" --> Mongo
+    FastAPI -- "Execute Workflows" --> LangGraph
+    LangGraph -- "Initiate Outbound Call" --> Vapi
+    Vapi -- "Phone Call" --> Customer(("👤 Customer"))
+    
+    Vapi -- "Webhook (Call Finished)" --> FastAPI
+    FastAPI -- "Pass Transcript" --> LangGraph
+    LangGraph -- "Analyze Transcript" --> OpenAI
+    OpenAI -- "Structured JSON Evaluation" --> LangGraph
+    LangGraph -- "Update Status & Logs" --> Mongo
+    
+    FastAPI -- "WebSocket Broadcast (Real-time)" --> Client
+
+    style Client fill:#61dafb,stroke:#fff,color:#000
+    style FastAPI fill:#059669,stroke:#fff,color:#fff
+    style Mongo fill:#47A248,stroke:#fff,color:#fff
+    style Vapi fill:#6366f1,stroke:#fff,color:#fff
+    style OpenAI fill:#10a37f,stroke:#fff,color:#fff
+    style LangGraph fill:#f59e0b,stroke:#fff,color:#fff
 ```
 
-### LangGraph Architecture
+### 2. LangGraph Sequence Flow
+```mermaid
+sequenceDiagram
+    participant UI as React Dashboard
+    participant BE as FastAPI Backend
+    participant DB as MongoDB
+    participant LG as LangGraph Agent
+    participant VAPI as Vapi.ai
 
-**Dispatch Graph** (triggered by admin "Launch Campaign"):
+    %% 1. Trigger Campaign
+    UI->>BE: POST /api/campaigns/trigger
+    BE->>LG: Start Dispatch Graph
+    LG->>DB: Query PENDING Leads
+    DB-->>LG: Return Leads & Prompts
+    LG->>VAPI: Request Outbound Call
+    VAPI-->>LG: Call ID returned
+    LG->>DB: Update status to CALL_INITIATED
+    BE-->>UI: WebSocket Event (CALL_INITIATED)
+    
+    Note over VAPI,UI: ...Call occurs with Customer...
+    
+    %% 2. Webhook & Evaluation
+    VAPI->>BE: POST Webhook (Transcript + End Report)
+    BE->>LG: Start Evaluation Graph
+    LG->>OpenAI: Send Transcript for Analysis
+    OpenAI-->>LG: Structured JSON (QUALIFIED, 95%)
+    LG->>DB: Update status to QUALIFIED
+    LG->>DB: Save Call Log & Transcript
+    BE-->>UI: WebSocket Event (QUALIFIED)
 ```
-START → fetch_leads_node → build_prompt_node → dispatch_calls_node → END
-```
-- `fetch_leads_node`: Queries MongoDB for all `PENDING` leads
-- `build_prompt_node`: Dynamically loads company's `system_prompt` from DB
-- `dispatch_calls_node`: Calls Vapi API, updates DB to `CALL_INITIATED`, broadcasts WebSocket event
-
-**Evaluation Graph** (triggered by Vapi webhook):
-```
-START → load_call_context_node → evaluate_transcript_node → human_loop_check_node → state_update_node → END
-```
-- `load_call_context_node`: Finds lead by `call_id`
-- `evaluate_transcript_node`: Sends transcript to GPT-4o-mini with structured output
-- `human_loop_check_node`: If confidence < 60% → `NEEDS_REVIEW`, else pass through
-- `state_update_node`: Updates DB, saves call log, broadcasts WebSocket event
 
 ---
 
